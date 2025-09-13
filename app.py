@@ -1,10 +1,7 @@
-import requests
+import tempfile, subprocess, os
 from flask import Flask, request, send_file, jsonify
-import tempfile
 
 app = Flask(__name__)
-
-LATEX_CC_URL = "https://latex.cc/api/v1/pdf"
 
 @app.route("/compile", methods=["POST"])
 def compile_latex():
@@ -13,30 +10,29 @@ def compile_latex():
         return jsonify({"error": "Send JSON with 'latex' field"}), 400
 
     latex_code = data["latex"]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tex_path = os.path.join(tmpdir, "main.tex")
+        pdf_path = os.path.join(tmpdir, "main.pdf")
+        with open(tex_path, "w") as f:
+            f.write(latex_code)
 
-    # Call LaTeX.cc API
-    try:
-        response = requests.post(
-            LATEX_CC_URL,
-            json={"source": latex_code},
-            timeout=30
-        )
-    except requests.RequestException as e:
-        return jsonify({"error": "Failed to reach LaTeX.cc", "details": str(e)}), 500
+        # Run pdflatex
+        try:
+            subprocess.run(
+                ["pdflatex", "-interaction=nonstopmode", "main.tex"],
+                cwd=tmpdir,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except subprocess.CalledProcessError as e:
+            return jsonify({"error": "Compilation failed", "log": e.stdout.decode()}), 500
 
-    if response.status_code != 200:
-        return jsonify({"error": "LaTeX.cc compilation failed", "details": response.text}), 500
-
-    # Save PDF to a temporary file
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmpfile:
-        tmpfile.write(response.content)
-        tmpfile_path = tmpfile.name
-
-    return send_file(tmpfile_path, as_attachment=True, download_name="output.pdf")
+        return send_file(pdf_path, as_attachment=True, download_name="output.pdf")
 
 @app.route("/")
 def index():
-    return "LaTeX.cc compiler service running"
+    return "LaTeX compiler service running"
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
